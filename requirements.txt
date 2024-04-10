@@ -1,0 +1,4 @@
+tqdm
+requests
+pedalboard
+runpod == 1.6.2
