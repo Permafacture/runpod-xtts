@@ -7,7 +7,8 @@ import uuid
 
 from tqdm import tqdm
 from pedalboard.io import AudioFile
-import runpod 
+import runpod
+import pysbd
 
 
 # config
@@ -16,10 +17,12 @@ import runpod
 API_KEY = "Get UR Own From Runpod"
 ENDPOINT_ID = "ID of serverless instance"
 WORK_DIR = 'project_1'
+CHECK_LENGTH = 250  # Alert if any sentences are too long and abort. False means don't check
 DOCUMENT = Path(WORK_DIR, 'document.txt')
 STATUS_CSV = Path(WORK_DIR, 'status.csv')
 OUTFILE = Path(WORK_DIR, 'FinalAudio.mp3')
 N_WORKERS = 4  # same as runpod serverless `max workers`
+LANGUAGE = 'en'
 
 
 # code
@@ -28,11 +31,23 @@ N_WORKERS = 4  # same as runpod serverless `max workers`
 runpod.api_key = API_KEY
 endpoint = runpod.Endpoint(ENDPOINT_ID)
 
-def init_csv(input_file, status_csv):
+def check_len(doc, max_length=CHECK_LENGTH):
+    segmenter = pysbd.Segmenter(language=LANGUAGE, clean=True) 
+    sentences = [S for P in doc for S in segmenter.segment(P)]
+    too_long = [S for S in sentences if len(S) > max_length]
+    if too_long:
+        out = '\n\n'.join(too_long)
+        out = "the following sentences are longer than {max_length}:\n\n" + out
+        raise RuntimeError(f"{out}\n\nSet CHECK_LENGTH to False if you don't want this check")
+
+
+def init_csv(input_file, status_csv, max_length=CHECK_LENGTH):
     # split document into paragraphs
     if status_csv.exists():
         raise RuntimeError(f"{status_csv} exists")
-    doc = [x for x in map(str.strip, open(input_file).read().split('\n')) if x][:2]
+    doc = [x for x in map(str.strip, open(input_file).read().split('\n')) if x]
+    if CHECK_LENGTH:
+        check_len(doc, max_length=max_length)
     rows = []
     for i, text in enumerate(doc):
         row = {'index': i, 'success': None, 'duration': None, 'text': text,
@@ -92,9 +107,9 @@ def worker(row, workdir=WORK_DIR, kwargs=None):
             'response_time': response_time, 'filename': outfile}
 
 def compile_final_audio(rows, outfile):
-    rows = [row for row in rows if row['success'] == 'True']
+    rows = [row for row in rows if row['success'] == 'True' and row['index']]
     assert rows, "Expected some passing items"
-    rows.sort(key = lambda x: x['index'])
+    rows.sort(key = lambda x: int(x['index']))
     with AudioFile(str(rows[0]['filename'])) as f:
         samplerate = f.samplerate
         num_channels = f.num_channels
@@ -112,6 +127,7 @@ if __name__ == '__main__':
         print(f"Creating {STATUS_CSV}")
         init_csv(DOCUMENT, STATUS_CSV)
     rows = list(csv.DictReader(open(STATUS_CSV)))
+    rows = [row for row in rows if row['index']] # user might introduce empty rows in excel
     good_rows = [row for row in rows if row['success'] == 'True']
     incomplete = [row for row in rows if row['success'] != 'True']
     N = len(incomplete)
@@ -130,7 +146,7 @@ if __name__ == '__main__':
         for row in incomplete:
             if row['index'] not in good_ids:
                 all_rows.append(row)
-        all_rows.sort(key = lambda x: x['index'])
+        all_rows.sort(key = lambda x: int(x['index']))
         with open(STATUS_CSV, 'w') as fh:
             writer = csv.DictWriter(fh, fieldnames=all_rows[0].keys())
             writer.writeheader()
